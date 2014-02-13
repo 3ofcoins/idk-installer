@@ -4,3 +4,5 @@
 /idk-installer
 /idk-installer-darwin-x86_64
 /idk-installer-linux-x86_64
+/idk_*.deb
+/idk-[0-9]*_*.*.sh
