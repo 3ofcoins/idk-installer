@@ -138,24 +138,32 @@ func main () {
 		log.Panic("Checksum mismatch")
 	}
 
-	var cmd *exec.Cmd
+	var cmd_words []string
 	switch {
 	case strings.HasSuffix(metadata["basename"],  ".sh"):
-		cmd = exec.Command("/bin/sh", metadata["basename"])
+		cmd_words = []string{"/bin/sh", metadata["basename"]}
 	case strings.HasSuffix(metadata["basename"], ".deb"):
-		cmd = exec.Command("/usr/bin/dpkg", "-i", metadata["basename"])
+		cmd_words = []string{"/usr/bin/dpkg", "-i", metadata["basename"]}
 	default:
 		log.Panic("CAN'T HAPPEN")
 	}
+
+	var cmd *exec.Cmd
 	if os.Getuid() != 0 {
-		cmd.Args = append(cmd.Args, "")
-		copy(cmd.Args[1:], cmd.Args)
-		cmd.Args[0] = "/usr/bin/sudo"
-		cmd.Path = "/usr/bin/sudo"
+		cmd = exec.Command("/usr/bin/sudo", cmd_words...)
+	} else {
+		cmd = exec.Command(cmd_words[0], cmd_words[1:]...)
 	}
-	log.Println("Running: ", cmd.Path, cmd.Args)
+	cmd.Stdin  = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	log.Println("Running ", cmd.Path, cmd.Args)
 	if err := cmd.Run() ; err != nil { panic(err) }
 
 	cmd = exec.Command("/usr/bin/idk", "setup")
+	cmd.Stdin  = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	log.Println("Running ", cmd.Path, cmd.Args)
 	if err := cmd.Run() ; err != nil { panic(err) }	
 }
