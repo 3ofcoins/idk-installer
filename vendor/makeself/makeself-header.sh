@@ -2,9 +2,16 @@ cat << EOF  > "$archname"
 #!/bin/sh
 # This script was generated using Makeself $MS_VERSION
 
+if mount | grep -q 'on /tmp ' ; then
+    default_tmpdir=/var/tmp
+else
+    default_tmpdir=/tmp
+fi
+
 CRCsum="$CRCsum"
 MD5="$MD5sum"
-TMPROOT=\${TMPDIR:=/tmp}
+TMPROOT=\${TMPDIR:=\$default_tmpdir}
+echo "TMPROOT=\$TMPROOT TMPDIR=\$TMPDIR default_tmpdir=\$default_tmpdir"
 
 label="$LABEL"
 script="$SCRIPT"
