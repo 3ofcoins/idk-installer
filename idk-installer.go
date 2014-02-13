@@ -19,6 +19,12 @@ import "launchpad.net/goamz/s3"
 import "github.com/coreos/go-semver/semver"
 import "github.com/cheggaaa/pb"
 
+// Command line switches
+var Flags struct {
+	prerelease bool
+	version string
+}
+
 // IAM idk-installer, read-only access to downloads.3ofcoins.net
 const AWS_ACCESS_KEY_ID = "AKIAIYVLKVLRJET2YMZQ"
 const AWS_SECRET_ACCESS_KEY = "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"
@@ -34,9 +40,25 @@ func Bucket() *s3.Bucket {
 	return _bucket
 }
 
-var Flags struct {
-	prerelease bool
-	version string
+func idkSemVersion() (rv *semver.Version, err error) {
+	if Flags.version == "latest" {
+		objs, err := Bucket().List("idk/", "/", "", 1000)
+		if err != nil { return nil, err }
+
+		for _, prefix := range(objs.CommonPrefixes) {
+			prefix = strings.TrimRight(strings.TrimPrefix(prefix, "idk/"), "/")
+			if ver, err := semver.NewVersion(prefix) ; err != nil {
+				log.Println("Semver error for", prefix, ":", err)
+			} else {
+				if (Flags.prerelease || ver.PreRelease == "") && (rv == nil || rv.LessThan(*ver)) {
+					rv = ver
+				}
+			}
+		}
+		return rv, nil
+	} else {
+		return semver.NewVersion(Flags.version)
+	}
 }
 
 type PlatformInfo struct {
@@ -78,41 +100,24 @@ func (pi *PlatformInfo) MatchMetadata(mdjson []byte) (err error, md map[string]s
 	}
 }
 
-func latestVersion() (rv *semver.Version) {
-	objs, err := Bucket().List("idk/", "/", "", 1000)
-	if err != nil { log.Panic(err) }
-
-	for _, prefix := range(objs.CommonPrefixes) {
-		prefix = strings.TrimRight(strings.TrimPrefix(prefix, "idk/"), "/")
-		if ver, err := semver.NewVersion(prefix) ; err != nil {
-			log.Println("Semver error for", prefix, ":", err)
-		} else {
-			if (Flags.prerelease || ver.PreRelease == "") && (rv == nil || rv.LessThan(*ver)) {
-				rv = ver
-			}
-		}
-	}
-	return
-}
-
 type IDKPackage struct {
 	io.ReadCloser
 	bytes int
 	metadata map[string]string
 }
 
-func S3Metadata(version *semver.Version, pi *PlatformInfo) (error, *IDKPackage) {
+func (pi *PlatformInfo) s3Package(version *semver.Version) (*IDKPackage, error) {
 	var metadata map[string]string
 	packages := make(map[string]s3.Key)
 	objs, err := Bucket().List(fmt.Sprintf("idk/%v/", version), "", "", 1000)
-	if err != nil { return err, nil }
+	if err != nil { return nil, err }
 	for _, key := range(objs.Contents) {
 		if strings.HasSuffix(key.Key, ".metadata.json") {
 			if md_json, err := Bucket().Get(key.Key) ; err != nil {
-				return err, nil
+				return nil, err
 			} else {
 				if err, metadata = pi.MatchMetadata(md_json) ; err != nil {
-					return err, nil
+					return nil, err
 				} else {
 					if len(metadata) > 0 {
 						break
@@ -125,26 +130,28 @@ func S3Metadata(version *semver.Version, pi *PlatformInfo) (error, *IDKPackage) 
 	}
 
 	if len(metadata) == 0 {
-		return errors.New("No package matched"), nil
+		return nil, errors.New("No package matched")
 	}
 
 	reader, err := Bucket().GetReader(packages[metadata["basename"]].Key)
-	if err != nil { return err, nil }
-	return nil, &IDKPackage{reader, int(packages[metadata["basename"]].Size), metadata}
+	if err != nil { return nil, err }
+	return &IDKPackage{reader, int(packages[metadata["basename"]].Size), metadata}, nil
 }
 
-func FromDirectory(dir string, pi *PlatformInfo) (error, *IDKPackage) {
+func (pi *PlatformInfo) dirPackage(dir string) (*IDKPackage, error) {
+	log.Println("Using packages from directory", dir)
+
 	var metadata map[string]string
 	if fifi, err := ioutil.ReadDir(dir) ; err != nil {
-		return err, nil
+		return nil, err
 	} else {
 		for _, fi := range(fifi) {
 			if strings.HasSuffix(fi.Name(), ".metadata.json") {
 				if md_json, err := ioutil.ReadFile(path.Join(dir, fi.Name())) ; err != nil {
-					return err, nil
+					return nil, err
 				} else {
 					if err, metadata = pi.MatchMetadata(md_json) ; err != nil {
-						return err, nil
+						return nil, err
 					} else {
 						if len(metadata) > 0 {
 							break
@@ -156,17 +163,39 @@ func FromDirectory(dir string, pi *PlatformInfo) (error, *IDKPackage) {
 	}
 
 	if len(metadata) == 0 {
-		return errors.New("No package matched"), nil
+		return nil, errors.New("No package matched")
 	}
 
 	pkg_path := path.Join(dir, metadata["basename"])
 	stat, err := os.Stat(pkg_path)
-	if err != nil { return err, nil }
+	if err != nil { return nil, err }
 
 	reader, err := os.Open(pkg_path)
-	if err != nil { return err, nil }
+	if err != nil { return nil, err }
 
-	return nil, &IDKPackage{reader, int(stat.Size()), metadata}
+	return &IDKPackage{reader, int(stat.Size()), metadata}, nil
+}
+
+func (pi *PlatformInfo) Package() (*IDKPackage, error) {
+	if strings.HasPrefix(Flags.version, "/") || strings.HasPrefix(Flags.version, "./") {
+		return pi.dirPackage(Flags.version)
+	} else {
+		version, err := idkSemVersion()
+		if err != nil { return nil, err }
+		return pi.s3Package(version)
+	}
+}
+
+func runCommand(words ...string) error {
+	cmd := exec.Command(words[0], words[1:]...)
+	cmd.Stdin  = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	log.Println("Running", words)
+	if err := cmd.Run() ; err != nil {
+		return fmt.Errorf("Failed to run %v: %v", words, err)
+	}
+	return nil
 }
 
 func (idk *IDKPackage) Install() error {
@@ -174,53 +203,52 @@ func (idk *IDKPackage) Install() error {
 
 	log.Printf("Downloading %v ...\n", idk.metadata["basename"])
 
+	// Create output file to write to
 	pkg_f, err := os.Create(idk.metadata["basename"])
-	if err != nil { panic(err) }
+	if err != nil { return err }
 	defer pkg_f.Close()
 
+	// Calculate checksum as we go
 	dl_sha256 := sha256.New()
 
+	// Display progress bar as we go
 	dl_pbar := pb.New(idk.bytes)
 	dl_pbar.SetUnits(pb.U_BYTES)
+
 	dl_pbar.Start()
 	io.Copy(pkg_f, dl_pbar.NewProxyReader(io.TeeReader(idk, dl_sha256)))
-
 	dl_pbar.Finish()
 
-	if hex.EncodeToString(dl_sha256.Sum(nil)) == idk.metadata["sha256"] {
-		log.Println("Checksum matches: sha256", idk.metadata["sha256"])
+	// Verify download
+	if dl_sha256 := hex.EncodeToString(dl_sha256.Sum(nil)) ; dl_sha256 == idk.metadata["sha256"] {
+		log.Println("Package checksum correct: sha256", idk.metadata["sha256"])
 	} else {
-		panic(errors.New("Checksum mismatch"))
+		return fmt.Errorf("Package checksum mismatch: expected %v, got %v",
+			idk.metadata["sha256"], dl_sha256)
 	}
 
-	var cmd_words []string
+	// Compose installation command
+	var install_command []string
+	if os.Getuid() != 0 {
+		install_command = append(install_command, "/usr/bin/sudo")
+	}
+
 	switch {
 	case strings.HasSuffix(idk.metadata["basename"],  ".sh"):
-		cmd_words = []string{"/bin/sh", idk.metadata["basename"]}
+		install_command = append(install_command,
+			"/bin/sh", idk.metadata["basename"])
 	case strings.HasSuffix(idk.metadata["basename"], ".deb"):
-		cmd_words = []string{"/usr/bin/dpkg", "-i", idk.metadata["basename"]}
+		install_command = append(install_command,
+			"/usr/bin/dpkg", "-i", idk.metadata["basename"])
 	default:
-		panic(errors.New("CAN'T HAPPEN"))
+		return fmt.Errorf("Unrecognized package type %v", idk.metadata["basename"])
 	}
 
-	var cmd *exec.Cmd
-	if os.Getuid() != 0 {
-		cmd = exec.Command("/usr/bin/sudo", cmd_words...)
-	} else {
-		cmd = exec.Command(cmd_words[0], cmd_words[1:]...)
-	}
-	cmd.Stdin  = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	log.Println("Running ", cmd.Path, cmd.Args)
-	if err := cmd.Run() ; err != nil { panic(err) }
+	// Install IDK
+	if err := runCommand(install_command...) ; err != nil { return err }
 
-	cmd = exec.Command("/usr/bin/idk", "setup")
-	cmd.Stdin  = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	log.Println("Running ", cmd.Path, cmd.Args)
-	if err := cmd.Run() ; err != nil { panic(err) }	
+	// Setup IDK
+	if err := runCommand("/opt/idk/bin/idk", "setup") ; err != nil { return err }
 
 	return nil
 }
@@ -231,25 +259,12 @@ func main () {
 	flag.Parse()
 
 	pi, err := detectPlatform()
-	if err != nil { log.Panic(err) }
+	if err != nil { log.Fatal(err) }
 
-	var pkg *IDKPackage
-	if pkg_dir := os.Getenv("IDK_PACKAGE_DIR") ; pkg_dir == "" {
-		var version *semver.Version
-		if Flags.version == "latest" {
-			version = latestVersion()
-		} else {
-			version, err = semver.NewVersion(Flags.version)
-			if err != nil { log.Panic(err) }
-		}
-
-		err, pkg = S3Metadata(version, pi)
-	} else {
-		err, pkg = FromDirectory(pkg_dir, pi)
-	}
-	if err != nil { log.Panic(err) }
+	pkg, err := pi.Package()
+	if err != nil { log.Fatal(err) }
 
 	if err := pkg.Install() ; err != nil {
-		log.Panic(err)
+		log.Fatal(err)
 	}
 }
