@@ -1,0 +1,13 @@
+# -*- ruby -*-
+vendor :makeself, version: '2.1.5' do
+  require 'open-uri'
+  require 'tempfile'
+  makeself_run = Tempfile.new(["makeself-2.1.5", "run"])
+  begin
+    makeself_run.write(open("http://megastep.org/makeself/makeself-2.1.5.run").read)
+    makeself_run.close
+    system "/bin/sh", makeself_run.path, '--target', '.' or raise RuntimeError
+  ensure
+    makeself_run.unlink
+  end
+end
