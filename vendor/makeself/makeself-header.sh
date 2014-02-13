@@ -24,6 +24,11 @@ fi
 
 unset CDPATH
 
+#v+ IDK will want path to installer itself
+dirname0="\`dirname "\$0"\`"
+export IDK_INSTALLER_PATH="\`cd "\$dirname0" ; pwd\`/\`basename "\$0"\`"
+#v- IDK
+
 MS_Printf()
 {
     \$print_cmd \$print_cmd_arg "\$1"
