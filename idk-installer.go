@@ -242,7 +242,12 @@ func (idk *IDKPackage) Install() error {
 	// Compose installation command
 	var install_command []string
 	if os.Getuid() != 0 {
-		install_command = append(install_command, "/usr/bin/sudo")
+		tmpdir := os.Getenv("TMPDIR")
+		if tmpdir == "" {
+			// Fallback. Normally we have tmpdir set by the run script.
+			tmpdir = "/tmp"
+		}
+		install_command = append(install_command, "/usr/bin/sudo", "/usr/bin/env", fmt.Sprintf("TMPDIR=%v", tmpdir))
 	}
 
 	switch {
