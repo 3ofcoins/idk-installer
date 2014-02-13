@@ -11,7 +11,6 @@ fi
 CRCsum="$CRCsum"
 MD5="$MD5sum"
 TMPROOT=\${TMPDIR:=\$default_tmpdir}
-echo "TMPROOT=\$TMPROOT TMPDIR=\$TMPDIR default_tmpdir=\$default_tmpdir"
 
 label="$LABEL"
 script="$SCRIPT"
