@@ -42,36 +42,48 @@ func Bucket() *s3.Bucket {
 
 func idkSemVersion() (rv *semver.Version, err error) {
 	if Flags.version == "latest" {
+		log.Println("Finding latest IDK version ...")
 		objs, err := Bucket().List("idk/", "/", "", 1000)
 		if err != nil { return nil, err }
 
 		for _, prefix := range(objs.CommonPrefixes) {
 			prefix = strings.TrimRight(strings.TrimPrefix(prefix, "idk/"), "/")
 			if ver, err := semver.NewVersion(prefix) ; err != nil {
-				log.Println("Semver error for", prefix, ":", err)
+				log.Println("WARNING: Semver error for", prefix, ":", err)
 			} else {
 				if (Flags.prerelease || ver.PreRelease == "") && (rv == nil || rv.LessThan(*ver)) {
 					rv = ver
 				}
 			}
 		}
-		return rv, nil
+		log.Println("Found latest version", rv)
 	} else {
-		return semver.NewVersion(Flags.version)
+		rv, err = semver.NewVersion(Flags.version)
+		log.Println("Using IDK version", rv)
 	}
+	return rv, nil
 }
 
 type PlatformInfo struct {
 	name string
 	version string
 	arch string
+	semver *semver.Version
+}
+
+func (pi *PlatformInfo) Semver() (*semver.Version, error) {
+	var err error
+	if pi.semver == nil {
+		pi.semver, err = semver.NewVersion(pi.version)
+	}
+	return pi.semver, err
 }
 
 func (pi *PlatformInfo) String() string {
 	return strings.Join( []string{pi.name, pi.version, pi.arch} , "-")
 }
 
-func (pi *PlatformInfo) MatchMetadata(mdjson []byte) (err error, md map[string]string) {
+func (pi *PlatformInfo) MatchMetadata(mdjson []byte) (md map[string]string, err error) {
 	if err = json.Unmarshal(mdjson, &md) ; err != nil {
 		return
 	}
@@ -81,19 +93,19 @@ func (pi *PlatformInfo) MatchMetadata(mdjson []byte) (err error, md map[string]s
 	switch pi.name {
 	case "mac_os_x":
 		mdpv, err := semver.NewVersion(md["platform_version"])
-		if err != nil { return err, nil }
-		piv, err := semver.NewVersion(pi.version)
-		if err != nil { return err, nil }
+		if err != nil { return nil, err }
+		piv, err := pi.Semver()
+		if err != nil { return nil, err }
 		if *mdpv == *piv || mdpv.LessThan(*piv) {
-			return nil, md
+			return md, nil
 		} else {
 			return nil, nil
 		}
 	case "arch":
-		return nil, md
+		return md, nil
 	default:
 		if md["platform_version"] == pi.version {
-			return nil, md
+			return md, nil
 		} else {
 			return nil, nil
 		}
@@ -116,7 +128,7 @@ func (pi *PlatformInfo) s3Package(version *semver.Version) (*IDKPackage, error) 
 			if md_json, err := Bucket().Get(key.Key) ; err != nil {
 				return nil, err
 			} else {
-				if err, metadata = pi.MatchMetadata(md_json) ; err != nil {
+				if metadata, err = pi.MatchMetadata(md_json) ; err != nil {
 					return nil, err
 				} else {
 					if len(metadata) > 0 {
@@ -130,7 +142,7 @@ func (pi *PlatformInfo) s3Package(version *semver.Version) (*IDKPackage, error) 
 	}
 
 	if len(metadata) == 0 {
-		return nil, errors.New("No package matched")
+		return nil, fmt.Errorf("Could not find package version %v for platform %v", version, pi)
 	}
 
 	reader, err := Bucket().GetReader(packages[metadata["basename"]].Key)
@@ -150,7 +162,7 @@ func (pi *PlatformInfo) dirPackage(dir string) (*IDKPackage, error) {
 				if md_json, err := ioutil.ReadFile(path.Join(dir, fi.Name())) ; err != nil {
 					return nil, err
 				} else {
-					if err, metadata = pi.MatchMetadata(md_json) ; err != nil {
+					if metadata, err = pi.MatchMetadata(md_json) ; err != nil {
 						return nil, err
 					} else {
 						if len(metadata) > 0 {
