@@ -1,5 +1,6 @@
 #!/bin/sh
 osarch=`uname -s | tr A-Z a-z`-`uname -m`
+export TMPDIR=`pwd`
 if [ -x ./idk-installer-$osarch ] ; then
     exec ./idk-installer-$osarch "${@}"
 else
