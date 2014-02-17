@@ -6,16 +6,18 @@ import "encoding/json"
 import "errors"
 import "flag"
 import "fmt"
+import "net/http"
 import "io"
 import "io/ioutil"
 import "log"
 import "os"
 import "os/exec"
 import "path"
+import "runtime/debug"
 import "strings"
 
-import "launchpad.net/goamz/aws"
-import "launchpad.net/goamz/s3"
+import "github.com/crowdmob/goamz/aws"
+import "github.com/crowdmob/goamz/s3"
 import "github.com/coreos/go-semver/semver"
 import "github.com/cheggaaa/pb"
 
@@ -33,8 +35,10 @@ const S3_BUCKET_NAME = "downloads.3ofcoins.net"
 var _bucket *s3.Bucket
 func Bucket() *s3.Bucket {
 	if _bucket == nil {
-		_bucket = s3.
-			New(aws.Auth{AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY}, aws.Regions["us-east-1"]).
+		var auth aws.Auth
+		auth.AccessKey = AWS_ACCESS_KEY_ID
+		auth.SecretKey = AWS_SECRET_ACCESS_KEY
+		_bucket = s3.New(auth, aws.Regions["us-east-1"]).
 			Bucket(S3_BUCKET_NAME)
 	}
 	return _bucket
@@ -44,7 +48,7 @@ func idkSemVersion() (rv *semver.Version, err error) {
 	if Flags.version == "latest" {
 		log.Println("Finding latest IDK version ...")
 		objs, err := Bucket().List("idk/", "/", "", 1000)
-		if err != nil { return nil, err }
+		if err != nil { debug.PrintStack() ; return nil, err }
 
 		for _, prefix := range(objs.CommonPrefixes) {
 			prefix = strings.TrimRight(strings.TrimPrefix(prefix, "idk/"), "/")
@@ -93,9 +97,9 @@ func (pi *PlatformInfo) MatchMetadata(mdjson []byte) (md map[string]string, err 
 	switch pi.name {
 	case "mac_os_x":
 		mdpv, err := semver.NewVersion(md["platform_version"])
-		if err != nil { return nil, err }
+		if err != nil { debug.PrintStack() ; return nil, err }
 		piv, err := pi.Semver()
-		if err != nil { return nil, err }
+		if err != nil { debug.PrintStack() ; return nil, err }
 		if *mdpv == *piv || mdpv.LessThan(*piv) {
 			return md, nil
 		} else {
@@ -118,18 +122,39 @@ type IDKPackage struct {
 	metadata map[string]string
 }
 
+// S3 needs plus signs escaped in URL path, even before query
+// string. Goamz doesn't take this into account. This results in 404s
+// and 403s. We need plus signs because semver. We hack around it by
+// getting an URL (as files themselves are public anyway), and
+// processing the plus sign in the URL string.
+func getWithPlusWorkaround(key string) (*http.Response, error) {
+	req, err := http.NewRequest("GET", Bucket().URL(key), nil)
+	if err != nil { debug.PrintStack() ; return nil, err }
+	req.URL.Opaque = strings.Replace(req.URL.Path, "+", "%2B", -1)
+	// log.Println("GET", req.URL)
+	return new(http.Client).Do(req)
+}
+
 func (pi *PlatformInfo) s3Package(version *semver.Version) (*IDKPackage, error) {
 	var metadata map[string]string
-	packages := make(map[string]s3.Key)
+	packages := make(map[string]string)
 	objs, err := Bucket().List(fmt.Sprintf("idk/%v/", version), "", "", 1000)
-	if err != nil { return nil, err }
+	if err != nil { debug.PrintStack() ; return nil, err }
 	for _, key := range(objs.Contents) {
 		if strings.HasSuffix(key.Key, ".metadata.json") {
-			if md_json, err := Bucket().Get(key.Key) ; err != nil {
-				return nil, err
+			if resp, err := getWithPlusWorkaround(key.Key) ; err != nil {
+				debug.PrintStack() ; return nil, err
 			} else {
-				if metadata, err = pi.MatchMetadata(md_json) ; err != nil {
+				body, err := ioutil.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil || resp.StatusCode >= 400 {
+					log.Printf("Got %v %v -- %v", resp.Proto, resp.Status, string(body))
+					debug.PrintStack()
+					if err == nil { err = fmt.Errorf("%v %v", resp.Proto, resp.Status) }
 					return nil, err
+				}
+				if metadata, err = pi.MatchMetadata(body) ; err != nil {
+					log.Println("Invalid JSON:", string(body)) ; debug.PrintStack() ; return nil, err
 				} else {
 					if len(metadata) > 0 {
 						break
@@ -137,17 +162,27 @@ func (pi *PlatformInfo) s3Package(version *semver.Version) (*IDKPackage, error) 
 				}
 			}
 		} else {
-			packages[path.Base(key.Key)] = key
+			packages[path.Base(key.Key)] = key.Key
 		}
 	}
 
 	if len(metadata) == 0 {
-		return nil, fmt.Errorf("Could not find package version %v for platform %v", version, pi)
+		debug.PrintStack() ; return nil, fmt.Errorf("Could not find package version %v for platform %v", version, pi)
 	}
 
-	reader, err := Bucket().GetReader(packages[metadata["basename"]].Key)
-	if err != nil { return nil, err }
-	return &IDKPackage{reader, int(packages[metadata["basename"]].Size), metadata}, nil
+	key := packages[metadata["basename"]]
+	resp, err := getWithPlusWorkaround(key)
+	if err != nil { debug.PrintStack() ; return nil, err }
+	if resp.StatusCode >= 400 {
+		body, err := ioutil.ReadAll(resp.Body)
+		debug.PrintStack()
+		if err == nil {
+			return nil, fmt.Errorf("%v %v -- %v", resp.Proto, resp.Status, string(body))
+		} else {
+			return nil, fmt.Errorf("%v %v (can't read body because %v)", resp.Proto, resp.Status, err)
+		}
+	}
+	return &IDKPackage{resp.Body, int(resp.ContentLength), metadata}, nil
 }
 
 func (pi *PlatformInfo) dirPackage(dir string) (*IDKPackage, error) {
@@ -155,15 +190,15 @@ func (pi *PlatformInfo) dirPackage(dir string) (*IDKPackage, error) {
 
 	var metadata map[string]string
 	if fifi, err := ioutil.ReadDir(dir) ; err != nil {
-		return nil, err
+		debug.PrintStack() ; return nil, err
 	} else {
 		for _, fi := range(fifi) {
 			if strings.HasSuffix(fi.Name(), ".metadata.json") {
 				if md_json, err := ioutil.ReadFile(path.Join(dir, fi.Name())) ; err != nil {
-					return nil, err
+					debug.PrintStack() ; return nil, err
 				} else {
 					if metadata, err = pi.MatchMetadata(md_json) ; err != nil {
-						return nil, err
+						debug.PrintStack() ; return nil, err
 					} else {
 						if len(metadata) > 0 {
 							break
@@ -175,15 +210,15 @@ func (pi *PlatformInfo) dirPackage(dir string) (*IDKPackage, error) {
 	}
 
 	if len(metadata) == 0 {
-		return nil, errors.New("No package matched")
+		debug.PrintStack() ; return nil, errors.New("No package matched")
 	}
 
 	pkg_path := path.Join(dir, metadata["basename"])
 	stat, err := os.Stat(pkg_path)
-	if err != nil { return nil, err }
+	if err != nil { debug.PrintStack() ; return nil, err }
 
 	reader, err := os.Open(pkg_path)
-	if err != nil { return nil, err }
+	if err != nil { debug.PrintStack() ; return nil, err }
 
 	return &IDKPackage{reader, int(stat.Size()), metadata}, nil
 }
@@ -193,7 +228,7 @@ func (pi *PlatformInfo) Package() (*IDKPackage, error) {
 		return pi.dirPackage(Flags.version)
 	} else {
 		version, err := idkSemVersion()
-		if err != nil { return nil, err }
+		if err != nil { debug.PrintStack() ; return nil, err }
 		return pi.s3Package(version)
 	}
 }
@@ -205,7 +240,7 @@ func runCommand(words ...string) error {
 	cmd.Stderr = os.Stderr
 	log.Println("Running", words)
 	if err := cmd.Run() ; err != nil {
-		return fmt.Errorf("Failed to run %v: %v", words, err)
+		debug.PrintStack() ; return fmt.Errorf("Failed to run %v: %v", words, err)
 	}
 	return nil
 }
@@ -217,7 +252,7 @@ func (idk *IDKPackage) Install() error {
 
 	// Create output file to write to
 	pkg_f, err := os.Create(idk.metadata["basename"])
-	if err != nil { return err }
+	if err != nil { debug.PrintStack() ; return err }
 	defer pkg_f.Close()
 
 	// Calculate checksum as we go
@@ -235,7 +270,7 @@ func (idk *IDKPackage) Install() error {
 	if dl_sha256 := hex.EncodeToString(dl_sha256.Sum(nil)) ; dl_sha256 == idk.metadata["sha256"] {
 		log.Println("Package checksum correct: sha256", idk.metadata["sha256"])
 	} else {
-		return fmt.Errorf("Package checksum mismatch: expected %v, got %v",
+		debug.PrintStack() ; return fmt.Errorf("Package checksum mismatch: expected %v, got %v",
 			idk.metadata["sha256"], dl_sha256)
 	}
 
@@ -258,14 +293,14 @@ func (idk *IDKPackage) Install() error {
 		install_command = append(install_command,
 			"/usr/bin/dpkg", "-i", idk.metadata["basename"])
 	default:
-		return fmt.Errorf("Unrecognized package type %v", idk.metadata["basename"])
+		debug.PrintStack() ; return fmt.Errorf("Unrecognized package type %v", idk.metadata["basename"])
 	}
 
 	// Install IDK
-	if err := runCommand(install_command...) ; err != nil { return err }
+	if err := runCommand(install_command...) ; err != nil { debug.PrintStack() ; return err }
 
 	// Setup IDK
-	if err := runCommand("/opt/idk/bin/idk", "setup") ; err != nil { return err }
+	if err := runCommand("/opt/idk/bin/idk", "setup") ; err != nil { debug.PrintStack() ; return err }
 
 	return nil
 }
