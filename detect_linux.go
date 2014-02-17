@@ -8,8 +8,8 @@ import "os"
 import "os/exec"
 import "strings"
 
-func detectPlatform() (*PlatformInfo, error) {
-	var rv PlatformInfo
+func detectPlatform() (*Platform, error) {
+	var rv Platform
 
 	if out, err := exec.Command("uname", "-m").Output() ; err != nil {
 		return nil, err
