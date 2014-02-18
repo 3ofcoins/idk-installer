@@ -9,13 +9,14 @@ func main () {
 	flag.Parse()
 
 	platform, err := detectPlatform()
-	if err != nil { log.Fatal(err) }
+	if err != nil { log.Fatalln("ERROR detecting platform:", err) }
+	log.Println("Detected platform", platform)
 
 	manifest, err := GetManifest()
-	if err != nil { log.Fatal(err) }
+	if err != nil { log.Fatalln("ERROR getting manifest:", err) }
 
 	pkg, err := manifest.ForPlatform(platform, *version)
-	if err != nil { log.Fatal(err) }
+	if err != nil { log.Fatalln("ERROR selecting package:", err) }
 
 	if pkg == nil {
 		log.Println("Could not select a package for", platform, "at", version)
@@ -27,11 +28,11 @@ func main () {
 		} else {
 			log.Println("Manifest was empty.")
 		}
-		log.Fatal("Cannot proceed.")
+		log.Fatalln("Cannot proceed.")
 	}
 
 	log.Println("Selected package", pkg)
 
-	if err := pkg.Download() ; err != nil { log.Fatal(err) }
-	if err := pkg.Install()  ; err != nil { log.Fatal(err) }
+	if err := pkg.Download() ; err != nil { log.Fatalln("ERROR downloading package:", err) }
+	if err := pkg.Install()  ; err != nil { log.Fatalln("ERROR installing package:",  err) }
 }

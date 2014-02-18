@@ -1,6 +1,5 @@
 package main
 
-import "fmt"
 import "net/http"
 import "strings"
 
@@ -22,12 +21,12 @@ func httpClient() *http.Client {
 // URL string.
 func Get(url string) (*http.Response, error) {
 	req, err := http.NewRequest("GET", url, nil)
-	if err != nil { return nil, err }
+	if err != nil { return nil, Err(err) }
 	req.URL.Opaque = strings.Replace(req.URL.Path, "+", "%2B", -1)
 	resp, err := httpClient().Do(req)
 	if err != nil && resp.StatusCode >= 400 {
 		resp.Body.Close()
-		return nil, fmt.Errorf("%v %v", resp.Proto, resp.Status)
+		return nil, NewErrf("%v %v", resp.Proto, resp.Status)
 	}
 	return resp, nil
 }

@@ -2,7 +2,6 @@
 
 package main
 
-import "errors"
 import "os"
 import "os/exec"
 import "strings"
@@ -11,18 +10,18 @@ func detectPlatform() (*Platform, error) {
 	var rv Platform
 
 	if out, err := exec.Command("uname", "-m").Output() ; err != nil {
-		return nil, err
+		return nil, Err(err)
 	} else {
 		rv.arch = strings.TrimSpace(string(out))
 	}
 	
 	if _, err := os.Stat("/usr/bin/sw_vers") ; err != nil {
-		return nil, err
+		return nil, Err(err)
 	}
 
 	rv.name = "mac_os_x"
 	if out, err := exec.Command("/usr/bin/sw_vers").Output() ; err != nil {
-		return nil, err
+		return nil, Err(err)
 	} else {
 		for _, line := range(strings.Split(string(out), "\n")) {
 			splut := strings.SplitN(line, ":\t", 2)
@@ -33,5 +32,5 @@ func detectPlatform() (*Platform, error) {
 		}
 	}
 	
-	return nil, errors.New("CAN'T HAPPEN")
+	return nil, NewErrf("CAN'T HAPPEN")
 }

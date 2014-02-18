@@ -2,7 +2,6 @@
 
 package main
 
-import "errors"
 import "io/ioutil"
 import "os"
 import "os/exec"
@@ -12,7 +11,7 @@ func detectPlatform() (*Platform, error) {
 	var rv Platform
 
 	if out, err := exec.Command("uname", "-m").Output() ; err != nil {
-		return nil, err
+		return nil, Err(err)
 	} else {
 		rv.arch = strings.TrimSpace(string(out))
 	}
@@ -20,7 +19,7 @@ func detectPlatform() (*Platform, error) {
 	if f, err := os.Open("/etc/lsb-release") ; err == nil {
 		defer f.Close()
 		content, err := ioutil.ReadAll(f)
-		if err != nil { return nil, err }
+		if err != nil { return nil, Err(err) }
 		for _, ln := range(strings.Split(string(content), "\n")) {
 			splut := strings.SplitN(ln, "=", 2)
 			switch splut[0] {
@@ -30,20 +29,20 @@ func detectPlatform() (*Platform, error) {
 		}
 		return &rv, nil
 	} else if !os.IsNotExist(err) {
-		return nil, err
+		return nil, Err(err)
 	}
 
 	if f, err := os.Open("/etc/debian_version") ; err == nil {
 		defer f.Close()
 		rv.name = "debian"
 		if content, err := ioutil.ReadAll(f) ; err != nil {
-			return nil, err
+			return nil, Err(err)
 		} else {
 			rv.version = strings.TrimSpace(string(content))
 		}
 		return &rv, nil
 	} else if !os.IsNotExist(err) {
-		return nil, err
+		return nil, Err(err)
 	}
 
 	if _, err := os.Stat("/etc/arch-release") ; err == nil {
@@ -51,8 +50,8 @@ func detectPlatform() (*Platform, error) {
 		rv.version = "*"
 		return &rv, nil
 	} else if !os.IsNotExist(err) {
-		return nil, err
+		return nil, Err(err)
 	}
 	
-	return nil, errors.New("undetected")
+	return nil, NewErrf("Undetected platform")
 }

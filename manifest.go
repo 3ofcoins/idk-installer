@@ -7,7 +7,6 @@ import "log"
 import "os"
 import "path"
 import "path/filepath"
-import "runtime/debug"
 import "sort"
 import "strings"
 
@@ -25,12 +24,12 @@ func ManifestFromNetwork(url string) (pkgs Manifest, err error) {
 	log.Println("Downloading manifest from", url)
 
 	resp, err := Get(url)
-	if err != nil { return nil, err }
+	if err != nil { return nil, Err(err) }
 	manifest_json, err := ioutil.ReadAll(resp.Body)
 	resp.Body.Close()
-	if err != nil { return nil, err }
+	if err != nil { return nil, Err(err) }
 	if err = json.Unmarshal(manifest_json, &pkgs) ; err != nil {
-		return nil, err
+		return nil, Err(err)
 	}
 	pkgs.Sort()
 	return
@@ -40,12 +39,12 @@ func ManifestFromDir(dir string) (pkgs Manifest, err error) {
 	log.Println("Using packages from directory", dir)
 
 	if fifi, err := ioutil.ReadDir(dir) ; err != nil {
-		debug.PrintStack() ; return nil, err
+		return nil, Err(err)
 	} else {
 		for _, fi := range(fifi) {
 			if strings.HasSuffix(fi.Name(), ".metadata.json") {
 				if pkg, err := PackageFromJson(path.Join(dir, fi.Name())) ; err != nil {
-					debug.PrintStack() ; return nil, err
+					return nil, Err(err)
 				} else {
 					pkgs = append(pkgs, pkg)					
 				}
@@ -71,11 +70,11 @@ func GetManifest() (pkgs Manifest, err error) {
 			return ManifestFromDir(manifest_loc)
 		} else {
 			abspath, err := filepath.Abs(manifest_loc)
-			if err != nil { return nil, err }
+			if err != nil { return nil, Err(err) }
 			return ManifestFromNetwork(strings.Join([]string{"file://", abspath}, ""))
 		}
 	} else {
-		return nil, err
+		return nil, Err(err)
 	}
 }
 
@@ -83,16 +82,23 @@ func (p Manifest) ForPlatform(pi *Platform, version string) (*Package, error) {
 	var semVersion *semver.Version
 	if version != "stable" && version != "prerelease" {
 		sv, err := semver.NewVersion(version)
-		if err != nil { return nil, err }
+		if err != nil { return nil, Err(err) }
 		semVersion = sv
 	}
 
 	for _, pkg := range(p) {
-		if semVersion != nil       && *pkg.Version() != *semVersion { continue }
-		if version != "prerelease" && pkg.IsPreRelease()            { continue }
+		if semVersion != nil {
+			if *pkg.Version() != *semVersion { continue }
+		} else {
+			if version != "prerelease" && pkg.IsPreRelease() { continue }
+		}
 	
-		if accepts, err := pi.AcceptsPackage(pkg) ; accepts || err != nil {
-			return pkg, err
+		if accepts, err := pi.AcceptsPackage(pkg) ; err != nil {
+			return nil, Err(err)
+		} else {
+			if accepts {
+				return pkg, nil
+			}
 		}
 	}
 	return nil, nil

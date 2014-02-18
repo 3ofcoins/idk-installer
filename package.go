@@ -11,7 +11,6 @@ import "os"
 import "os/exec"
 import "path"
 import "path/filepath"
-import "runtime/debug"
 import "strings"
 
 import "github.com/cheggaaa/pb"
@@ -33,18 +32,16 @@ type Package struct {
 func PackageFromJson(json_path string) (*Package, error) {
 	var pkg Package
 	if metadata_json, err := ioutil.ReadFile(json_path) ; err != nil {
-		debug.PrintStack()
-		return nil, err
+		return nil, Err(err)
 	} else {
 		if err := json.Unmarshal(metadata_json, &pkg) ; err != nil {
-			debug.PrintStack()
-			return nil, err
+			return nil, Err(err)
 		}
 		pkg_path, err := filepath.Abs(path.Join(path.Dir(json_path), pkg.Basename))
-		if err != nil { debug.PrintStack() ; return nil, err }
+		if err != nil { return nil, Err(err) }
 		pkg.URL = strings.Join([]string{"file://", pkg_path}, "")
 		if fi, err := os.Stat(pkg_path) ; err != nil {
-			debug.PrintStack() ; return nil, err
+			return nil, Err(err)
 		} else {
 			pkg.Bytes = int(fi.Size())
 		}
@@ -77,12 +74,12 @@ func (pkg *Package) Download() error {
 	log.Println("Downloading package from", pkg.URL)
 
 	resp, err := Get(pkg.URL)
-	if err != nil { debug.PrintStack() ; return err }
+	if err != nil { return Err(err) }
 	defer resp.Body.Close()
 
 	// Create output file to write to
 	pkg_f, err := os.Create(pkg.Basename)
-	if err != nil { debug.PrintStack() ; return err }
+	if err != nil { return Err(err) }
 	defer pkg_f.Close()
 
 	// Calculate checksum as we go
@@ -98,9 +95,9 @@ func (pkg *Package) Download() error {
 
 	// Verify download
 	if dl_sha256 := hex.EncodeToString(dl_sha256.Sum(nil)) ; dl_sha256 == pkg.Sha256 {
-		log.Printf("Package checksum correct (SHA256 ", pkg.Sha256, ")\n")
+		log.Println("Package checksum correct: SHA256", pkg.Sha256)
 	} else {
-		debug.PrintStack() ; return fmt.Errorf("Package checksum mismatch: expected SHA256 %v, got %v",
+		return NewErrf("Package checksum mismatch: expected SHA256 %v, got %v",
 			pkg.Sha256, dl_sha256)
 	}
 
@@ -114,7 +111,7 @@ func runCommand(words ...string) error {
 	cmd.Stderr = os.Stderr
 	log.Println("Running", words)
 	if err := cmd.Run() ; err != nil {
-		debug.PrintStack() ; return fmt.Errorf("Failed to run %v: %v", words, err)
+		return Errf(err, "%v", words)
 	}
 	return nil
 }
@@ -139,14 +136,14 @@ func (pkg *Package) Install() error {
 		install_command = append(install_command,
 			"/usr/bin/dpkg", "-i", pkg.Basename)
 	default:
-		debug.PrintStack() ; return fmt.Errorf("Unrecognized package type %v", pkg.Basename)
+		return NewErrf("Unrecognized package type %v", pkg.Basename)
 	}
 
 	// Install PKG
-	if err := runCommand(install_command...) ; err != nil { debug.PrintStack() ; return err }
+	if err := runCommand(install_command...) ; err != nil { return Err(err) }
 
 	// Setup IDK
-	if err := runCommand("/opt/idk/bin/idk", "setup") ; err != nil { debug.PrintStack() ; return err }
+	if err := runCommand("/opt/idk/bin/idk", "setup") ; err != nil { return Err(err) }
 
 	return nil
 }

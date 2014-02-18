@@ -1,6 +1,5 @@
 package main
 
-import "runtime/debug"
 import "strings"
 
 import "github.com/coreos/go-semver/semver"
@@ -17,7 +16,7 @@ func (platform *Platform) Semver() (*semver.Version, error) {
 	if platform.semver == nil {
 		platform.semver, err = semver.NewVersion(platform.version)
 	}
-	return platform.semver, err
+	return platform.semver, Err(err)
 }
 
 func (platform *Platform) String() string {
@@ -30,9 +29,13 @@ func (platform *Platform) AcceptsPackage(pkg *Package) (bool, error) {
 	}
 	switch platform.name {
 	case "mac_os_x":
-		psv, err := platform.Semver()
-		if err != nil { debug.PrintStack() ; return false, err }
-		if *pkg.Version() == *psv || pkg.Version().LessThan(*psv) {
+		platform_sv, err := platform.Semver()
+		if err != nil { return false, Err(err) }
+
+		pkg_platform_sv, err := semver.NewVersion(pkg.PlatformVersion)
+		if err != nil { return false, Err(err) }
+
+		if *pkg_platform_sv == *platform_sv || pkg_platform_sv.LessThan(*platform_sv) {
 			return true, nil
 		} else {
 			return false, nil
